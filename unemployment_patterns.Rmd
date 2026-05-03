@@ -1,0 +1,250 @@
+---
+title: "Geographic Patterns in Unemployment Rates"
+author: "tidycensus Analysis"
+date: "`r Sys.Date()`"
+output: html_document
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+
+library(tidycensus)
+library(shiny)
+library(leaflet)
+library(dplyr)
+
+#census_api_key("7e7f533832c5c79acfb2c6b90a6152bbaf5da8b2", install = TRUE, overwrite=TRUE)
+# Restart R after running the line above — only needed once
+```
+
+## About this app
+
+This app explores **Question 3: What geographic patterns exist in unemployment rates?**
+using the American Community Survey (ACS) via the `tidycensus` package.
+
+- **Geography**: County-level (national) or Census tract (by state)
+- **Variables**: `B23025_005` (civilian unemployed) ÷ `B23025_002` (labor force)
+- **Survey**: 5-year ACS — required for tract-level data, which is never available
+  in the 1-year ACS ([Walker, Ch. 2](https://walker-data.com/census-r/an-introduction-to-tidycensus.html))
+
+---
+
+```{r ui}
+fluidPage(
+
+  # --- Controls ---
+  wellPanel(
+    fluidRow(
+      column(4,
+        selectInput("geography", "Geography level",
+          choices = c(
+            "County (national)" = "county",
+            "Census tract (by state)" = "tract"
+          )
+        )
+      ),
+      column(4,
+        # State selector — only meaningful for tracts
+        # For counties we pull all US counties in one call
+        conditionalPanel(
+          condition = "input.geography == 'tract'",
+          selectInput("state", "State (required for tracts)",
+            choices = setNames(state.abb, state.name),
+            selected = "MD"
+          )
+        )
+      ),
+      column(4,
+        sliderInput("year", "ACS 5-year end year",
+          min = 2015, max = 2022, value = 2022, step = 1, sep = ""
+        )
+      )
+    )
+  ),
+
+  # --- Map ---
+  leafletOutput("map", height = "520px"),
+
+  br(),
+
+  # --- Stats strip ---
+  fluidRow(
+    column(3, wellPanel(
+      h5("Median rate"),
+      textOutput("stat_median")
+    )),
+    column(3, wellPanel(
+      h5("Highest county/tract"),
+      textOutput("stat_max")
+    )),
+    column(3, wellPanel(
+      h5("Lowest county/tract"),
+      textOutput("stat_min")
+    )),
+    column(3, wellPanel(
+      h5("Areas above 10%"),
+      textOutput("stat_high")
+    ))
+  ),
+
+  # --- Data table toggle ---
+  checkboxInput("show_table", "Show underlying data table", value = FALSE),
+  conditionalPanel(
+    condition = "input.show_table == true",
+    DT::dataTableOutput("data_table")
+  )
+)
+```
+
+```{r server}
+# ── Reactive: fetch data from Census API ──────────────────────────────────────
+map_data <- reactive({
+
+  geo  <- input$geography
+  yr   <- input$year
+  st   <- if (geo == "tract") input$state else NULL
+
+  # Using named variables per Walker Ch. 2 §2.4.2 — this renames columns
+  # from raw IDs to readable names in the returned wide-format data frame
+  withProgress(message = "Fetching Census data...", value = 0.3, {
+
+    df <- get_acs(
+      geography = geo,
+      variables = c(
+        unemployed  = "B23025_005",   # Civilian unemployed
+        labor_force = "B23025_002"    # In labor force
+      ),
+      state    = st,
+      year     = yr,
+      survey   = "acs5",             # 5-yr required for tract; Walker Ch.2 §2.2.1
+      geometry = TRUE,
+      output   = "wide"              # gives unemployed_E, labor_force_E columns
+    )
+
+    setProgress(0.8)
+
+    df <- df |>
+      mutate(
+        unemp_rate = round(unemployed_E / labor_force_E * 100, 1),
+        # Propagate margin of error for the ratio
+        unemp_moe  = round(unemployed_M / labor_force_E * 100, 1),
+        # Reliability flag: suppress estimates where MOE > half the estimate
+        reliable   = !is.na(unemp_rate) & (unemp_moe < unemp_rate / 2)
+      ) |>
+      filter(!is.na(unemp_rate), labor_force_E > 0)
+
+    setProgress(1)
+    df
+  })
+})
+
+# ── Render: Leaflet choropleth map ────────────────────────────────────────────
+output$map <- renderLeaflet({
+
+  df  <- map_data()
+
+  # colorQuantile bins into equal-sized groups — better than colorNumeric
+  # for right-skewed unemployment distributions (Walker Ch. 6 pattern)
+  pal <- colorQuantile("YlOrRd", df$unemp_rate, n = 5, na.color = "#cccccc")
+
+  labels <- sprintf(
+    "<strong>%s</strong><br/>Unemployment: %s%%<br/>MOE: ±%s%%<br/>%s",
+    df$NAME,
+    df$unemp_rate,
+    df$unemp_moe,
+    ifelse(df$reliable, "", "<em style='color:#c0392b'>⚠ Estimate may be unreliable</em>")
+  ) |> lapply(htmltools::HTML)
+
+  leaflet(df) |>
+    addProviderTiles("CartoDB.Positron") |>
+    addPolygons(
+      fillColor   = ~pal(unemp_rate),
+      fillOpacity = 0.75,
+      color       = "white",
+      weight      = 0.5,
+      highlight   = highlightOptions(
+        weight      = 2,
+        color       = "#444",
+        fillOpacity = 0.9,
+        bringToFront = TRUE
+      ),
+      label        = labels,
+      labelOptions = labelOptions(
+        style     = list("font-weight" = "normal", padding = "4px 8px"),
+        textsize  = "13px",
+        direction = "auto"
+      )
+    ) |>
+    addLegend(
+      position = "bottomright",
+      pal      = pal,
+      values   = ~unemp_rate,
+      title    = paste("Unemployment<br>rate (%) —", input$year),
+      opacity  = 0.85
+    )
+})
+
+# ── Render: summary stats ─────────────────────────────────────────────────────
+output$stat_median <- renderText({
+  paste0(median(map_data()$unemp_rate, na.rm = TRUE), "%")
+})
+
+output$stat_max <- renderText({
+  df  <- map_data()
+  top <- df |> filter(unemp_rate == max(unemp_rate, na.rm = TRUE)) |> slice(1)
+  paste0(top$NAME, " (", top$unemp_rate, "%)")
+})
+
+output$stat_min <- renderText({
+  df  <- map_data()
+  bot <- df |> filter(unemp_rate == min(unemp_rate, na.rm = TRUE)) |> slice(1)
+  paste0(bot$NAME, " (", bot$unemp_rate, "%)")
+})
+
+output$stat_high <- renderText({
+  n <- sum(map_data()$unemp_rate > 10, na.rm = TRUE)
+  paste0(n, " area", ifelse(n == 1, "", "s"))
+})
+
+# ── Render: data table ────────────────────────────────────────────────────────
+output$data_table <- DT::renderDataTable({
+  map_data() |>
+    sf::st_drop_geometry() |>
+    select(
+      GEOID,
+      Name          = NAME,
+      `Unemp. rate (%)` = unemp_rate,
+      `MOE (±%)`    = unemp_moe,
+      Reliable      = reliable,
+      `Unemployed`  = unemployed_E,
+      `Labor force` = labor_force_E
+    ) |>
+    arrange(desc(`Unemp. rate (%)`))
+}, options = list(pageLength = 15, scrollX = TRUE))
+```
+
+---
+
+### Notes on methodology
+
+**Variable selection** — `B23025_005` and `B23025_002` come from ACS Table B23025
+(Employment Status for the Population 16+). Use `load_variables()` to explore
+alternatives:
+
+```r
+vars <- load_variables(2022, "acs5", cache = TRUE)
+View(vars)  # filter label column for "unemployed"
+```
+
+**Margin of error** — ACS estimates carry a margin of error (MOE). For small
+geographies like Census tracts, the MOE can exceed the estimate itself, making the
+rate unreliable. This app flags those cases with a ⚠ warning in the map tooltip.
+
+**Why 5-year ACS?** — The 1-year ACS only covers geographies with population ≥ 65,000,
+so Census tracts are never available. The 5-year ACS (`survey = "acs5"`) is always
+the right choice for sub-county analysis.
+
+**Color scale** — `colorQuantile()` divides areas into equal-sized buckets (quintiles),
+which prevents high-unemployment outliers from washing out color variation across
+the rest of the map.
