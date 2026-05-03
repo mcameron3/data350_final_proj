@@ -13,8 +13,11 @@ library(tidycensus)
 library(shiny)
 library(leaflet)
 library(dplyr)
+library(tidyr)
+library(sf)
+options(tigris_use_cache = TRUE)  # cache shapefiles so they don't re-download
 
-#census_api_key("7e7f533832c5c79acfb2c6b90a6152bbaf5da8b2", install = TRUE, overwrite=TRUE)
+# census_api_key("YOUR_KEY_HERE", install = TRUE)
 # Restart R after running the line above — only needed once
 ```
 
@@ -105,11 +108,12 @@ map_data <- reactive({
   yr   <- input$year
   st   <- if (geo == "tract") input$state else NULL
 
-  # Using named variables per Walker Ch. 2 §2.4.2 — this renames columns
-  # from raw IDs to readable names in the returned wide-format data frame
+  # Fetch in default tidy (long) format, then pivot wide ourselves.
+  # tidycensus v1.7+ with output="wide" names columns after the raw variable ID
+  # (e.g. B23025_005E) not the custom name, so we pivot manually for safety.
   withProgress(message = "Fetching Census data...", value = 0.3, {
 
-    df <- get_acs(
+    df_long <- get_acs(
       geography = geo,
       variables = c(
         unemployed  = "B23025_005",   # Civilian unemployed
@@ -118,19 +122,43 @@ map_data <- reactive({
       state    = st,
       year     = yr,
       survey   = "acs5",             # 5-yr required for tract; Walker Ch.2 §2.2.1
-      geometry = TRUE,
-      output   = "wide"              # gives unemployed_E, labor_force_E columns
+      geometry = TRUE               # keep sf geometry on long-format result
     )
 
-    setProgress(0.8)
+    setProgress(0.6)
 
-    df <- df |>
+    # Pivot to wide: one row per geography, columns: unemployed_E/M, labor_force_E/M
+    # We use the named-variable labels that tidycensus puts in the `variable` column
+    geo_col <- sf::st_geometry(df_long)   # preserve geometry before pivot
+
+    df_wide <- df_long |>
+      sf::st_drop_geometry() |>
+      tidyr::pivot_wider(
+        id_cols     = c(GEOID, NAME),
+        names_from  = variable,
+        values_from = c(estimate, moe),
+        names_glue  = "{variable}_{.value}"   # → unemployed_estimate, etc.
+      ) |>
+      rename(
+        unemployed_E  = unemployed_estimate,
+        unemployed_M  = unemployed_moe,
+        labor_force_E = labor_force_estimate,
+        labor_force_M = labor_force_moe
+      )
+
+    # Re-attach geometry (one geometry row per GEOID after pivot)
+    geom_df <- df_long |>
+      select(GEOID) |>
+      group_by(GEOID) |>
+      slice(1) |>
+      ungroup()
+
+    df <- dplyr::left_join(geom_df, df_wide, by = "GEOID") |>
       mutate(
         unemp_rate = round(unemployed_E / labor_force_E * 100, 1),
-        # Propagate margin of error for the ratio
         unemp_moe  = round(unemployed_M / labor_force_E * 100, 1),
-        # Reliability flag: suppress estimates where MOE > half the estimate
-        reliable   = !is.na(unemp_rate) & (unemp_moe < unemp_rate / 2)
+        reliable   = !is.na(unemp_rate) & !is.na(unemp_moe) &
+                       (unemp_moe < unemp_rate / 2)
       ) |>
       filter(!is.na(unemp_rate), labor_force_E > 0)
 
