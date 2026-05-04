@@ -9,12 +9,232 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+```{r}
+library(shiny)
+library(bslib)
+library(dplyr)
+library(purrr)
+library(ggplot2)
+library(sf)
+library(spdep)
+library(tidycensus)
+library(scales)
+library(tibble)
+
+options(tigris_use_cache = TRUE, sf_max.plot.default = 16^6)
+```
+
+```{r}
+lisa_quadrants <- function(x, w, alpha = 0.05) {
+  n <- length(x)
+  out <- rep("No data", n)
+  ok <- !is.na(x)
+  if (!any(ok) || sum(ok) < 2) {
+    return(out)
+  }
+  z <- rep(NA_real_, n)
+  z[ok] <- as.numeric(scale(x[ok]))
+  lag_z <- spdep::lag.listw(w, z, zero.policy = TRUE)
+  lm <- spdep::localmoran(x, w, zero.policy = TRUE)
+  p <- lm[, "Pr(z != E(Ii))"]
+  dplyr::case_when(
+    !ok ~ "No data",
+    is.na(p) | is.na(z) | is.na(lag_z) ~ "No data",
+    p > alpha ~ "Not significant",
+    z > 0 & lag_z > 0 ~ "High–High (high inequality cluster)",
+    z < 0 & lag_z < 0 ~ "Low–Low",
+    z > 0 & lag_z < 0 ~ "High–Low (outlier)",
+    z < 0 & lag_z > 0 ~ "Low–High (outlier)",
+    TRUE ~ "Other"
+  )
+}
+
+build_county_weights <- function(geom_sf) {
+  geom <- sf::st_geometry(geom_sf)
+  nb <- spdep::poly2nb(geom, queen = TRUE)
+  spdep::nb2listw(nb, style = "W", zero.policy = TRUE)
+}
+
+fetch_gini_year <- function(state, year, census_key) {
+  tidycensus::get_acs(
+    geography = "county",
+    variables = "B19083_001",
+    state = state,
+    year = year,
+    survey = "acs5",
+    geometry = TRUE,
+    key = census_key
+  ) |>
+    dplyr::rename(gini = estimate, gini_moe = moe) |>
+    dplyr::mutate(
+      year = year,
+      county_name = NAME
+    ) |>
+    dplyr::filter(!is.na(gini))
+}
+
+ui <- bslib::page_sidebar(
+  title = "Maryland Inequality Clusters (ACS Gini) Over Time",
+  theme = bslib::bs_theme(version = 5, bootswatch = "flatly"),
+  sidebar = bslib::sidebar(
+    sliderInput(
+      "year_map",
+      "Map Year",
+      min = 2010L,
+      max = 2024L,
+      value = 2019L,
+      step = 1L,
+      sep = ""
+    ),
+    radioButtons(
+      "map_fill",
+      "Fill counties using",
+      choices = c("Gini index" = "gini", "LISA cluster type" = "lisa"),
+      selected = "gini",
+      inline = FALSE
+    ),
+    actionButton("fetch", "Load Data", class = "btn-primary")
+  ),
+  bslib::card(
+    full_screen = TRUE,
+    uiOutput("map_or_placeholder")
+  )
+)
+
+server <- function(input, output, session) {
+  rv <- reactiveValues(
+    panel = NULL
+  )
+  
+  observeEvent(input$fetch, {
+    renv_path <- path.expand("~/.Renviron")
+    if (file.exists(renv_path)) {
+      readRenviron(renv_path)
+    }
+    key_use <- Sys.getenv("CENSUS_API_KEY", unset = "")
+    Sys.setenv(CENSUS_API_KEY = key_use)
+    years <- seq.int(2010L, 2024L)
+    showNotification("Fetching ACS from Census API…", id = "busy", duration = NULL)
+    out <- purrr::map_dfr(years, function(yr) {
+      fetch_gini_year("MD", yr, census_key = key_use)
+    })
+    removeNotification("busy")
+    rv$panel <- out
+    showNotification(
+      sprintf(
+        "Loaded %d county-year rows (ACS 5-year end years %d–%d).",
+        nrow(out),
+        2010L,
+        2024L
+      ),
+      type = "message"
+    )
+  }, ignoreInit = TRUE)
+  
+  map_data <- reactive({
+    req(rv$panel)
+    df <- rv$panel |> dplyr::filter(year == input$year_map)
+    df
+  })
+  
+  map_labeled <- reactive({
+    d <- map_data()
+    if (nrow(d) < 4) {
+      d$lisa <- "Too few counties for LISA"
+      return(d)
+    }
+    w <- build_county_weights(d)
+    d$lisa <- lisa_quadrants(d$gini, w, alpha = 0.05)
+    d
+  })
+  
+  lisa_colours <- c(
+    "High–High (high inequality cluster)" = "#b2182b",
+    "Low–Low" = "#2166ac",
+    "High–Low (outlier)" = "#d95f0e",
+    "Low–High (outlier)" = "#7570b3",
+    "Not significant" = "#525252",
+    "No data" = "#bdbdbd",
+    "Too few counties for LISA" = "#636363",
+    "Could not build spatial weights" = "#636363",
+    "Other" = "#737373"
+  )
+  
+  output$map_or_placeholder <- renderUI({
+    if (is.null(rv$panel)) {
+      div(
+        style = paste(
+          "display: flex; align-items: center; justify-content: center;",
+          "height: 520px; background-color: #d0d0d0; border-radius: 6px;"
+        ),
+        div(
+          style = "text-align: center; color: #555; font-size: 1.15rem;",
+          "Press the ", strong("Load Data"), " button to get started."
+        )
+      )
+    } else {
+      plotOutput("plot_map", height = 520)
+    }
+  })
+  
+  output$plot_map <- renderPlot({
+    d <- map_labeled()
+    d <- sf::st_transform(d, 4326)
+    st <- "Maryland"
+    if (input$map_fill == "gini") {
+      p <- ggplot2::ggplot(d) +
+        ggplot2::geom_sf(
+          ggplot2::aes(fill = gini, colour = lisa, alpha = gini_moe),
+          linewidth = 0.25
+        ) +
+        ggplot2::scale_fill_viridis_c(option = "plasma", na.value = "grey90") +
+        ggplot2::scale_colour_manual(values = lisa_colours, na.value = "grey50", name = "LISA (border)") +
+        ggplot2::scale_alpha(range = c(0.35, 1), name = "Gini MOE")
+    } else {
+      p <- ggplot2::ggplot(d) +
+        ggplot2::geom_sf(
+          ggplot2::aes(fill = lisa, alpha = gini, linewidth = gini_moe),
+          colour = "gray15"
+        ) +
+        ggplot2::scale_fill_manual(
+          values = c(
+            "High–High (high inequality cluster)" = "#b2182b",
+            "Low–Low" = "#2166ac",
+            "High–Low (outlier)" = "#f4a582",
+            "Low–High (outlier)" = "#92c5de",
+            "Not significant" = "#e0e0e0",
+            "No data" = "#bdbdbd",
+            "Too few counties for LISA" = "#636363",
+            "Could not build spatial weights" = "#636363",
+            "Other" = "#cccccc"
+          ),
+          na.value = "grey90",
+          name = "LISA fill"
+        ) +
+        ggplot2::scale_alpha(range = c(0.45, 1), name = "Gini") +
+        ggplot2::scale_linewidth(range = c(0.05, 0.55), name = "Gini MOE")
+    }
+    p +
+      ggplot2::coord_sf(crs = sf::st_crs(4326)) +
+      ggplot2::labs(
+        title = "County Inequality in Maryland"
+      ) +
+      ggplot2::theme_minimal(base_size = 12) +
+      ggplot2::theme(
+        panel.grid = ggplot2::element_blank(),
+        axis.text = ggplot2::element_blank(),
+        axis.title = ggplot2::element_blank(),
+        legend.position = "right"
+      )
+  })
+}
+
+shinyApp(ui, server)
+```
 
 ## Overview
 
 In this portion of the project, you will improve upon your previous EDA report to build an interactive dashboard using Shiny and create a set of slides to present your findings. Think of it as "something to show for" on your resume, so take pride in your work!
-
-
 
 ## Preparation
 
@@ -26,7 +246,6 @@ In this portion of the project, you will improve upon your previous EDA report t
   - the title of your slides.
 
 ## Instruction for your Shiny app
-
 
 1. The app must have an well-organized interface with **multiple visualization tabs and one summary tab**.
 2. Each group member is responsible for at least one tab, *not including* the summary tab.
@@ -42,7 +261,6 @@ In this portion of the project, you will improve upon your previous EDA report t
     - The tab must allow the user to choose some of the variables of interest and output the summary statistics, and bonus for outputting the distribution on top of that
     - you must include an **action button**: the user will only see the updated output **after** clicking the button.
 
-
 ## Instruction for your slides and presentation
 
 1. The slides are clean and well organized, suitable for a typical scientific report
@@ -52,7 +270,6 @@ In this portion of the project, you will improve upon your previous EDA report t
 5. Bonus for a short demo of the Shiny app. 
 6. The recorded presentation should be 10-15 minutes long. Feel free to make edits if you see necessary. Upload the final video to YouTube. Set it to private and include the shared link in your submission (see 1st bullet point in submission). 
 
-
 ## Submission
 
 A `zip` file consisting of 
@@ -61,7 +278,6 @@ A `zip` file consisting of
   - one `R` file for your Shiny app
   - one set of slides in **PDF** format (work in Google Slides then save to PDF)
   - one pdf file with the post-production report
-
 
 ## Grading structure
 
@@ -73,7 +289,6 @@ The precise rubric will be published via ELMS. In addition to the criteria from 
 
 > **Caution:** Please let me know of communication issues as soon as possible. You are not expected to pick up substantial slacks from your group members. 
 
-
 | Role | Responsibilities |
 |------|----------------|
 | **Project Leader/Manager** | - Guides the overall direction of the EDA project <br> - Organizes workflow, deadlines, communication (with team members and the instructor), and file submission  |
@@ -84,9 +299,6 @@ The precise rubric will be published via ELMS. In addition to the criteria from 
 |||
 | **All Members** | - Each member is responsible for $\geq 1$ Shiny tabs and their own portion of the presentation and slides <br> - Each member is responsible for writing a group member review, to be submitted separately |
 
-
-
-
 ## Post-production
 
 Each member is required to submit a report including an individual reflection and a group member evaluation. Both will be available only to the instructor/grader. Each report must include the following key information:
@@ -94,8 +306,3 @@ Each member is required to submit a report including an individual reflection an
 - Your roles and your plots (1 paragraph)
 - Summary of your work (1 paragraph)
 - Evaluation of each of your team member's work, i.e., what aspects are done well and what could be improved for each member. (1 paragraph for each member)
-
-
-
-
-
