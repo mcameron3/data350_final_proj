@@ -1,0 +1,229 @@
+---
+title: "median_household_income"
+author: "ian"
+date: "2026-05-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+## R Markdown
+
+Here is exploring question 1: **Is there a relation between educational attainment levels and poverty rates or median houselhold income**. This will give us a better idea of some of the factors which might have an association with income inequality, as there might be some link between education and financial oppurtunity.
+
+```{r}
+library(shiny)
+library(tidycensus)
+library(tidyverse)
+library(ggplot2)
+
+
+# Get a free key at: https://api.census.gov/data/key_signup.html
+#census_api_key("400885c1c572363fb6843495c5b9e36c18ebfb23", install = TRUE)
+
+
+```
+
+```{r app}
+ui <- fluidPage(
+  titlePanel("Education & Economic Outcomes by State"),
+ 
+  sidebarLayout(
+    sidebarPanel(
+      selectInput("acs_year", "ACS Year",
+                  choices = c(2022, 2021, 2020, 2019, 2018), selected = 2022),
+      selectInput("y_var", "Y-Axis",
+                  choices = c(
+                    "Poverty Rate (%)"            = "poverty_rate",
+                    "Median Household Income ($)" = "median_income"
+                  )),
+      selectInput("edu_var", "X-Axis (Education)",
+                  choices = c(
+                    "% Bachelor's Degree or Higher"    = "bachelors_plus",
+                    "% High School Diploma or Higher"  = "hs_plus",
+                    "% Less Than High School"          = "no_hs"
+                  )),
+      actionButton("fetch", "Fetch Data")
+    ),
+ 
+    mainPanel(
+      plotOutput("scatter", height = "500px", hover = hoverOpts("plot_hover", delay = 50)),
+      verbatimTextOutput("hover_label"),
+      hr(),
+      h4("Statistical Summary"),
+      fluidRow(
+        column(6, tableOutput("stats_table")),
+        column(6, wellPanel(textOutput("stats_text")))
+      )
+    )
+  )
+)
+ 
+server <- function(input, output, session) {
+ 
+  data <- eventReactive(input$fetch, {
+    raw <- get_acs(
+      geography = "state",
+      variables = c(
+        total_25plus = "B15003_001",
+        hs_grad      = "B15003_017",
+        ged          = "B15003_018",
+        sc_lt1       = "B15003_019",
+        sc_1pl       = "B15003_020",
+        assoc        = "B15003_021",
+        bachelors    = "B15003_022",
+        masters      = "B15003_023",
+        prof         = "B15003_024",
+        doctorate    = "B15003_025",
+        tot_poverty  = "B17001_001",
+        in_poverty   = "B17001_002",
+        med_income   = "B19013_001"
+      ),
+      year = as.integer(input$acs_year),
+      survey = "acs5",
+      output = "wide"
+    )
+ 
+    raw %>%
+      transmute(
+        state          = NAME,
+        bachelors_plus = (bachelorsE + mastersE + profE + doctorateE) / total_25plusE * 100,
+        hs_plus        = (hs_gradE + gedE + sc_lt1E + sc_1plE + assocE +
+                          bachelorsE + mastersE + profE + doctorateE) / total_25plusE * 100,
+        no_hs          = 100 - hs_plus,
+        poverty_rate   = in_povertyE / tot_povertyE * 100,
+        median_income  = med_incomeE
+      ) %>%
+      filter(!is.na(poverty_rate), !is.na(median_income))
+  })
+ 
+  x_labels <- c(
+    bachelors_plus = "% Bachelor's Degree or Higher",
+    hs_plus        = "% High School Diploma or Higher",
+    no_hs          = "% Less Than High School"
+  )
+  y_labels <- c(
+    poverty_rate  = "Poverty Rate (%)",
+    median_income = "Median Household Income ($)"
+  )
+ 
+  output$scatter <- renderPlot({
+    df <- data()
+    req(df)
+ 
+    ggplot(df, aes(x = .data[[input$edu_var]], y = .data[[input$y_var]])) +
+      geom_smooth(method = "lm", se = TRUE, color = "#0d3b8c", fill = "#a8c4f0",
+                  alpha = 0.25, linewidth = 1.4) +
+      geom_point(size = 3, alpha = 0.8, color = "#1a6fb5") +
+      labs(
+        x       = x_labels[[input$edu_var]],
+        y       = y_labels[[input$y_var]],
+        title   = paste(y_labels[[input$y_var]], "vs.", x_labels[[input$edu_var]]),
+        caption = paste("Source: ACS 5-Year", input$acs_year)
+      ) +
+      theme_bw(base_size = 13) +
+      theme(
+        plot.title       = element_text(face = "bold", size = 14),
+        panel.grid.minor = element_blank(),
+        panel.border     = element_rect(color = "#cccccc"),
+        axis.title       = element_text(color = "#444444"),
+        plot.caption     = element_text(color = "#888888", size = 9)
+      )
+  })
+ 
+  # Show state name when hovering near a point
+  output$hover_label <- renderText({
+    df <- data()
+    req(df, input$plot_hover)
+ 
+    hover <- input$plot_hover
+    dists <- sqrt((df[[input$edu_var]] - hover$x)^2 +
+                  (df[[input$y_var]]   - hover$y / hover$domain$top * max(df[[input$y_var]]))^2)
+ 
+    nearest <- df[which.min(dists), ]
+    threshold <- (max(df[[input$edu_var]]) - min(df[[input$edu_var]])) * 0.05
+ 
+    if (min(dists) < threshold) {
+      y_val <- if (input$y_var == "median_income") {
+        paste0("$", scales::comma(round(nearest[[input$y_var]])))
+      } else {
+        paste0(round(nearest[[input$y_var]], 1), "%")
+      }
+      paste0(nearest$state, "  |  ",
+             x_labels[[input$edu_var]], ": ", round(nearest[[input$edu_var]], 1), "%  |  ",
+             y_labels[[input$y_var]], ": ", y_val)
+    } else {
+      ""
+    }
+  })
+ 
+  # Statistical analysis
+  stats <- reactive({
+    df <- data(); req(df)
+    fit <- lm(df[[input$y_var]] ~ df[[input$edu_var]])
+    list(fit = fit, df = df)
+  })
+ 
+  output$stats_table <- renderTable({
+    s   <- stats(); req(s)
+    fit <- s$fit
+    df  <- s$df
+    sm  <- summary(fit)
+    r   <- cor(df[[input$edu_var]], df[[input$y_var]], use = "complete.obs")
+    coefs <- coef(sm)
+ 
+    data.frame(
+      Statistic = c(
+        "Pearson Correlation (r)",
+        "R-squared",
+        "Adjusted R-squared",
+        "Intercept",
+        "Slope (education → outcome)",
+        "Slope Std. Error",
+        "Slope p-value",
+        "F-statistic",
+        "Observations"
+      ),
+      Value = c(
+        round(r, 4),
+        round(sm$r.squared, 4),
+        round(sm$adj.r.squared, 4),
+        round(coefs[1, 1], 4),
+        round(coefs[2, 1], 4),
+        round(coefs[2, 2], 4),
+        formatC(coefs[2, 4], format = "e", digits = 3),
+        round(sm$fstatistic[1], 3),
+        nrow(df)
+      )
+    )
+  }, striped = TRUE, hover = TRUE, bordered = TRUE)
+ 
+  output$stats_text <- renderText({
+    s   <- stats(); req(s)
+    fit <- s$fit; df <- s$df
+    sm  <- summary(fit)
+    r   <- cor(df[[input$edu_var]], df[[input$y_var]], use = "complete.obs")
+    p   <- coef(sm)[2, 4]
+    slope <- coef(sm)[2, 1]
+ 
+    direction  <- if (slope > 0) "positively" else "negatively"
+    strength   <- if (abs(r) > 0.7) "strongly" else if (abs(r) > 0.4) "moderately" else "weakly"
+    sig        <- if (p < 0.001) "highly significant (p < 0.001)" else if (p < 0.05) paste0("significant (p = ", round(p, 3), ")") else paste0("not significant (p = ", round(p, 3), ")")
+ 
+    paste0(
+      "Interpretation: ", x_labels[[input$edu_var]], " is ", strength, " ", direction,
+      " associated with ", y_labels[[input$y_var]], " across U.S. states. ",
+      "The relationship is ", sig, ". ",
+      "The model explains ", round(sm$r.squared * 100, 1), "% of the variance in ", y_labels[[input$y_var]], " (R² = ", round(sm$r.squared, 3), ")."
+    )
+  })
+}
+ 
+shinyApp(ui, server)
+```
+
+## Including Plots
+
+
