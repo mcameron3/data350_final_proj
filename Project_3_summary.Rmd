@@ -11,7 +11,6 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ```{r}
 library(shiny)
-library(bslib)
 library(dplyr)
 library(purrr)
 library(ggplot2)
@@ -73,31 +72,128 @@ fetch_gini_year <- function(state, year, census_key) {
     dplyr::filter(!is.na(gini))
 }
 
-ui <- bslib::page_sidebar(
-  title = "Maryland Inequality Clusters (ACS Gini) Over Time",
-  theme = bslib::bs_theme(version = 5, bootswatch = "flatly"),
-  sidebar = bslib::sidebar(
-    sliderInput(
-      "year_map",
-      "Map Year",
-      min = 2010L,
-      max = 2024L,
-      value = 2019L,
-      step = 1L,
-      sep = ""
+ui <- fluidPage(
+  tags$head(tags$style(HTML("
+    body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background: #f8f7f4; color: #2c2c2a; }
+    .well { background: #fff; border: 1px solid #e0ddd4; border-radius: 10px; box-shadow: none; }
+    .nav-tabs { border-bottom: 2px solid #e0ddd4; }
+    .nav-tabs > li.active > a { font-weight: 600; color: #2c2c2a; }
+    .section-label { font-size: 11px; color: #888780; text-transform: uppercase; letter-spacing: .06em; margin: 14px 0 4px; }
+    .guiding-q { background: #1a2e4a; color: #fff; padding: 18px 28px; border-radius: 10px; margin-bottom: 20px; }
+    .guiding-q h3 { margin: 0; font-size: 20px; font-weight: 500; }
+    .guiding-q p { margin: 6px 0 0; font-size: 13px; color: #a0b0c8; }
+  "))),
+
+  # guiding question
+  div(class = "guiding-q", h3("How does socioeconomic inequality vary across geographic areas, and what factors are most strongly associated with it?")),
+
+  # tabs
+  tabsetPanel(
+    id = "main_tabs",
+
+    # tab 1 – inequality clusters
+    tabPanel(
+      "Inequality Clusters",
+
+      br(),
+      sidebarLayout(
+        sidebarPanel(
+          width = 3,
+          div(class = "section-label", "Question"),
+          p("Are there clusters of high inequality, and how have they changed over time?", style = "font-size:12px; color:#6b7a90;"),
+          hr(),
+          div(class = "section-label", "Map Settings"),
+          sliderInput(
+            "year_map",
+            "Map Year",
+            min = 2010L,
+            max = 2024L,
+            value = 2019L,
+            step = 1L,
+            sep = ""
+          ),
+          radioButtons(
+            "map_fill",
+            "Fill counties using",
+            choices = c("Gini index" = "gini", "LISA cluster type" = "lisa"),
+            selected = "gini",
+            inline = FALSE
+          ),
+          hr(),
+          actionButton("fetch", "Load Data", class = "btn-primary", style = "width:100%;")
+        ),
+
+        mainPanel(
+          width = 9,
+          uiOutput("map_or_placeholder")
+        )
+      )
     ),
-    radioButtons(
-      "map_fill",
-      "Fill counties using",
-      choices = c("Gini index" = "gini", "LISA cluster type" = "lisa"),
-      selected = "gini",
-      inline = FALSE
+
+    # tab 2 – Michelle
+    tabPanel(
+      "Michelle",
+
+      br(),
+      sidebarLayout(
+        sidebarPanel(
+          width = 3,
+          div(class = "section-label", "Question"),
+          p("Michelle's research question goes here.", style = "font-size:12px; color:#6b7a90;"),
+          hr(),
+          div(class = "section-label", "Controls"),
+          p("Michelle's controls go here.", style = "font-size:12px; color:#6b7a90;")
+        ),
+
+        mainPanel(
+          width = 9,
+          p("Michelle's visualizations go here.", style = "font-size:13px; color:#5f5e5a;")
+        )
+      )
     ),
-    actionButton("fetch", "Load Data", class = "btn-primary")
-  ),
-  bslib::card(
-    full_screen = TRUE,
-    uiOutput("map_or_placeholder")
+
+    # tab 3 – Ian
+    tabPanel(
+      "Ian",
+
+      br(),
+      sidebarLayout(
+        sidebarPanel(
+          width = 3,
+          div(class = "section-label", "Question"),
+          p("Ian's research question goes here.", style = "font-size:12px; color:#6b7a90;"),
+          hr(),
+          div(class = "section-label", "Controls"),
+          p("Ian's controls go here.", style = "font-size:12px; color:#6b7a90;")
+        ),
+
+        mainPanel(
+          width = 9,
+          p("Ian's visualizations go here.", style = "font-size:13px; color:#5f5e5a;")
+        )
+      )
+    ),
+
+    # tab 4 – Summary
+    tabPanel(
+      "Summary",
+
+      br(),
+      sidebarLayout(
+        sidebarPanel(
+          width = 3,
+          div(class = "section-label", "Variables"),
+          p("Select variables to summarize.", style = "font-size:12px; color:#6b7a90;"),
+          hr(),
+          actionButton("summary_go", "Show Summary", class = "btn-primary", style = "width:100%;")
+        ),
+
+        mainPanel(
+          width = 9,
+          uiOutput("summary_output")
+        )
+      )
+    )
   )
 )
 
@@ -177,6 +273,32 @@ server <- function(input, output, session) {
     }
   })
   
+  output$summary_output <- renderUI({
+    input$summary_go
+    isolate({
+      if (is.null(rv$panel)) {
+        return(p("No data loaded yet. Press 'Load Data' on the Inequality Clusters tab first.", style = "font-size:13px; color:#888780;"))
+      }
+      df <- rv$panel |> dplyr::select(NAME, year, gini, gini_moe) |> sf::st_drop_geometry()
+      tagList(
+        h4("Summary Statistics: Gini Index by County-Year", style = "font-size:15px; font-weight:600;"),
+        renderTable({
+          df |>
+            dplyr::group_by(year) |>
+            dplyr::summarise(
+              N = dplyr::n(),
+              Mean = round(mean(gini, na.rm = TRUE), 4),
+              Median = round(median(gini, na.rm = TRUE), 4),
+              SD = round(sd(gini, na.rm = TRUE), 4),
+              Min = round(min(gini, na.rm = TRUE), 4),
+              Max = round(max(gini, na.rm = TRUE), 4),
+              .groups = "drop"
+            )
+        })
+      )
+    })
+  })
+
   output$plot_map <- renderPlot({
     d <- map_labeled()
     d <- sf::st_transform(d, 4326)
