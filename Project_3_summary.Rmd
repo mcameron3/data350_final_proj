@@ -125,7 +125,18 @@ ui <- fluidPage(
 
         mainPanel(
           width = 9,
-          uiOutput("map_or_placeholder")
+          uiOutput("map_or_placeholder"),
+          br(),
+          div(
+            style = "background:#fff; border:1px solid #e0ddd4; border-radius:10px; padding:22px 28px; margin-top:10px;",
+            h4("Analysis", style = "font-size:15px; font-weight:600; margin-top:0; color:#2c2c2a;"),
+            p("This is map displaying levels of income inequality in Maryland. To measure income inequality, we use two metrics: Gini index and LISA cluster. Gini index is a measure of income inequality ranging from 0 (perfect equality) to 1 (maximum inequality). LISA (Local Indicators of Spacial Association) clusters are meant to detect \"hot spots\" and \"cold spots\", which are meant to identify groupings of high or low income inequality."),
+            p("When Gini index is selected, counties are colored based on their Gini index, with darker/warmer tones indicating higher inequality. However, there is also a margin of error associated with each county, which is reflected in their opacity - a lower transparency indicates a higher margin of error, and as such, should be treated with more caution when interpreting this visualization. Finally, the borders of each county, while somewhat difficult to see, indicate LISA cluster types."),
+            p("When LISA cluster is selected, counties are instead colored based on their LISA (Local Indicators of Spatial Association) cluster, which was computerd using Anselin's Local Moran's I statistic (with alpha = 0.05). Red (High-High) counties have high inequality and are surrounded by high-inequality neighbors, blue (Low-Low) counties have low inequality and are surrounded by low-inequality neighbors. Additionally, orange and purple counties are outliers (where their inequality level diverges sharply from their neighbors), and gray counties are not statistically significant."),
+            p("Comparing Gini index throughout time, earlier years appear to have more uncertainty, as the coloring is more transparent. This is likely a result of the data - these earlier years may not have had as strict or careful data collection, resulting in higher margins of error. Moving through time, there are a few years where Gini index changes - between 2013 and 2014, and in the past ~5 years. However, there does not appear to be a strong trend in which direction Gini index changes (towards more or less inequality), or which counties are changing the most. Instead, we can see that more urban counties between Washington DC and Baltimore have lower levels of income inequality, while more rural counties and Baltimore City have higher levels of income inequality."),
+            p("Comparing LISA clusters throughout time, between 2010-2017, the only counties with statistically significant clusters are in Southern Maryland (Charles, Calvert, and St. Mary's Counties). However, between 2018-2019, Queen Anne's County was also labelled as low-low inequality, and in 2022, Prince George's County was also considered to have low-low inequality. This lack of statistical significance or change in which counties are labelled indicates that there are no strong clusters of inequality (geographic areas of high-high or low-low inequality."),
+            p("In conclusion, this map helps us visualize income inequality geographically in Maryland. Namely, there are lower levels of income inequality in more urban counties between Washington DC and Baltimore, while there are higher levels of income inequality in more rural counties and Baltimore City. Additionally, these levels of income inequality have not changed much in the past 10 years.")
+          )
         )
       )
     ),
