@@ -1,278 +1,144 @@
 ---
-title: "Geographic Patterns in Unemployment Rates"
-author: "tidycensus Analysis"
-date: "`r Sys.Date()`"
+title: "Employment Patterns in the US"
 output: html_document
 runtime: shiny
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
-
 library(tidycensus)
 library(shiny)
 library(leaflet)
 library(dplyr)
 library(tidyr)
-library(sf)
-options(tigris_use_cache = TRUE)  # cache shapefiles so they don't re-download
 
-# census_api_key("YOUR_KEY_HERE", install = TRUE)
-# Restart R after running the line above — only needed once
+options(tigris_use_cache = TRUE)
 ```
 
-## About this app
-
-This app explores **Question 3: What geographic patterns exist in unemployment rates?**
-using the American Community Survey (ACS) via the `tidycensus` package.
-
-- **Geography**: County-level (national) or Census tract (by state)
-- **Variables**: `B23025_005` (civilian unemployed) ÷ `B23025_002` (labor force)
-- **Survey**: 5-year ACS — required for tract-level data, which is never available
-  in the 1-year ACS ([Walker, Ch. 2](https://walker-data.com/census-r/an-introduction-to-tidycensus.html))
+> **Guiding Question:** What geographic patterns exist in unemployment rates across the United States?
 
 ---
 
-```{r ui}
+```{r ui, echo=FALSE}
 fluidPage(
 
-  # --- Controls ---
-  wellPanel(
-    fluidRow(
-      column(4,
-        selectInput("geography", "Geography level",
-          choices = c(
-            "County (national)" = "county",
-            "Census tract (by state)" = "tract"
-          )
-        )
-      ),
-      column(4,
-        # State selector — only meaningful for tracts
-        # For counties we pull all US counties in one call
-        conditionalPanel(
-          condition = "input.geography == 'tract'",
-          selectInput("state", "State (required for tracts)",
-            choices = setNames(state.abb, state.name),
-            selected = "MD"
-          )
-        )
-      ),
-      column(4,
-        sliderInput("year", "ACS 5-year end year",
-          min = 2015, max = 2022, value = 2022, step = 1, sep = ""
+  fluidRow(
+    column(6,
+      selectInput("variable", "Select a variable to map",
+        choices = c(
+          "Unemployment Rate"              = "unemp_rate",
+          "Labor Force Participation Rate" = "lfpr",
+          "Employment Rate"               = "emp_rate",
+          "Not in Labor Force Rate"       = "nilf_rate"
         )
       )
+    ),
+    column(6,
+      sliderInput("year", "Select Year",
+        min = 2015, max = 2022, value = 2022, step = 1, sep = "")
     )
   ),
 
-  # --- Map ---
-  leafletOutput("map", height = "520px"),
+  leafletOutput("map", height = "550px"),
 
   br(),
-
-  # --- Stats strip ---
   fluidRow(
-    column(3, wellPanel(
-      h5("Median rate"),
-      textOutput("stat_median")
-    )),
-    column(3, wellPanel(
-      h5("Highest county/tract"),
-      textOutput("stat_max")
-    )),
-    column(3, wellPanel(
-      h5("Lowest county/tract"),
-      textOutput("stat_min")
-    )),
-    column(3, wellPanel(
-      h5("Areas above 10%"),
-      textOutput("stat_high")
-    ))
-  ),
-
-  # --- Data table toggle ---
-  checkboxInput("show_table", "Show underlying data table", value = FALSE),
-  conditionalPanel(
-    condition = "input.show_table == true",
-    DT::dataTableOutput("data_table")
+    column(4, wellPanel(strong("Highest"), textOutput("highest"))),
+    column(4, wellPanel(strong("Lowest"),  textOutput("lowest"))),
+    column(4, wellPanel(strong("US Median"), textOutput("med")))
   )
 )
 ```
 
-```{r server}
-# ── Reactive: fetch data from Census API ──────────────────────────────────────
-map_data <- reactive({
+```{r server, echo=FALSE}
 
-  geo  <- input$geography
-  yr   <- input$year
-  st   <- if (geo == "tract") input$state else NULL
+# Pull all 4 variables from the same ACS table B23025
+get_data <- reactive({
 
-  # Fetch in default tidy (long) format, then pivot wide ourselves.
-  # tidycensus v1.7+ with output="wide" names columns after the raw variable ID
-  # (e.g. B23025_005E) not the custom name, so we pivot manually for safety.
-  withProgress(message = "Fetching Census data...", value = 0.3, {
+  raw <- get_acs(
+    geography = "county",
+    variables = c(
+      unemployed  = "B23025_005",   # Civilian unemployed
+      labor_force = "B23025_002",   # In labor force
+      employed    = "B23025_004",   # Civilian employed
+      nilf        = "B23025_007",   # Not in labor force
+      pop16       = "B23025_001"    # Total population 16+
+    ),
+    year     = input$year,
+    survey   = "acs5",
+    geometry = TRUE
+  )
 
-    df_long <- get_acs(
-      geography = geo,
-      variables = c(
-        unemployed  = "B23025_005",   # Civilian unemployed
-        labor_force = "B23025_002"    # In labor force
-      ),
-      state    = st,
-      year     = yr,
-      survey   = "acs5",             # 5-yr required for tract; Walker Ch.2 §2.2.1
-      geometry = TRUE               # keep sf geometry on long-format result
+  # Pivot to one row per county
+  wide <- raw |>
+    sf::st_drop_geometry() |>
+    tidyr::pivot_wider(
+      id_cols     = c(GEOID, NAME),
+      names_from  = variable,
+      values_from = estimate
     )
 
-    setProgress(0.6)
+  # Re-attach geometry
+  geom <- raw |> select(GEOID) |> group_by(GEOID) |> slice(1) |> ungroup()
 
-    # Pivot to wide: one row per geography, columns: unemployed_E/M, labor_force_E/M
-    # We use the named-variable labels that tidycensus puts in the `variable` column
-    geo_col <- sf::st_geometry(df_long)   # preserve geometry before pivot
-
-    df_wide <- df_long |>
-      sf::st_drop_geometry() |>
-      tidyr::pivot_wider(
-        id_cols     = c(GEOID, NAME),
-        names_from  = variable,
-        values_from = c(estimate, moe),
-        names_glue  = "{variable}_{.value}"   # → unemployed_estimate, etc.
-      ) |>
-      rename(
-        unemployed_E  = unemployed_estimate,
-        unemployed_M  = unemployed_moe,
-        labor_force_E = labor_force_estimate,
-        labor_force_M = labor_force_moe
-      )
-
-    # Re-attach geometry (one geometry row per GEOID after pivot)
-    geom_df <- df_long |>
-      select(GEOID) |>
-      group_by(GEOID) |>
-      slice(1) |>
-      ungroup()
-
-    df <- dplyr::left_join(geom_df, df_wide, by = "GEOID") |>
-      mutate(
-        unemp_rate = round(unemployed_E / labor_force_E * 100, 1),
-        unemp_moe  = round(unemployed_M / labor_force_E * 100, 1),
-        reliable   = !is.na(unemp_rate) & !is.na(unemp_moe) &
-                       (unemp_moe < unemp_rate / 2)
-      ) |>
-      filter(!is.na(unemp_rate), labor_force_E > 0)
-
-    setProgress(1)
-    df
-  })
+  left_join(geom, wide, by = "GEOID") |>
+    mutate(
+      unemp_rate = round(unemployed / labor_force * 100, 1),
+      lfpr       = round(labor_force / pop16 * 100, 1),
+      emp_rate   = round(employed    / labor_force * 100, 1),
+      nilf_rate  = round(nilf        / pop16 * 100, 1)
+    ) |>
+    filter(!is.na(unemp_rate), labor_force > 0)
 })
 
-# ── Render: Leaflet choropleth map ────────────────────────────────────────────
+# Label for the selected variable
+var_label <- reactive({
+  switch(input$variable,
+    unemp_rate = "Unemployment Rate (By Quantile)",
+    lfpr       = "Labor Force Participation Rate (By Quantile)",
+    emp_rate   = "Employment Rate (By Quantile)",
+    nilf_rate  = "Not in Labor Force Rate (By Quantile)"
+  )
+})
+
 output$map <- renderLeaflet({
 
-  df  <- map_data()
-
-  # colorQuantile bins into equal-sized groups — better than colorNumeric
-  # for right-skewed unemployment distributions (Walker Ch. 6 pattern)
-  pal <- colorQuantile("YlOrRd", df$unemp_rate, n = 5, na.color = "#cccccc")
-
-  labels <- sprintf(
-    "<strong>%s</strong><br/>Unemployment: %s%%<br/>MOE: ±%s%%<br/>%s",
-    df$NAME,
-    df$unemp_rate,
-    df$unemp_moe,
-    ifelse(df$reliable, "", "<em style='color:#c0392b'>⚠ Estimate may be unreliable</em>")
-  ) |> lapply(htmltools::HTML)
+  df  <- get_data()
+  col <- df[[input$variable]]
+  pal <- colorQuantile("YlOrRd", col, n = 5)
 
   leaflet(df) |>
     addProviderTiles("CartoDB.Positron") |>
+    setView(lng = -98.5, lat = 38.5, zoom = 4) |>
     addPolygons(
-      fillColor   = ~pal(unemp_rate),
-      fillOpacity = 0.75,
-      color       = "white",
-      weight      = 0.5,
-      highlight   = highlightOptions(
-        weight      = 2,
-        color       = "#444",
-        fillOpacity = 0.9,
-        bringToFront = TRUE
-      ),
-      label        = labels,
-      labelOptions = labelOptions(
-        style     = list("font-weight" = "normal", padding = "4px 8px"),
-        textsize  = "13px",
-        direction = "auto"
-      )
+      fillColor    = ~pal(df[[input$variable]]),
+      fillOpacity  = 0.7,
+      color        = "white",
+      weight       = 0.4,
+      highlight    = highlightOptions(weight = 2, fillOpacity = 0.9),
+      label        = ~paste0(NAME, ": ", df[[input$variable]], "%"),
+      labelOptions = labelOptions(textsize = "13px")
     ) |>
     addLegend(
       position = "bottomright",
       pal      = pal,
-      values   = ~unemp_rate,
-      title    = paste("Unemployment<br>rate (%) —", input$year),
-      opacity  = 0.85
+      values   = col,
+      title    = var_label()
     )
 })
 
-# ── Render: summary stats ─────────────────────────────────────────────────────
-output$stat_median <- renderText({
-  paste0(median(map_data()$unemp_rate, na.rm = TRUE), "%")
+output$highest <- renderText({
+  df  <- get_data() |> sf::st_drop_geometry()
+  top <- df |> slice_max(.data[[input$variable]], n = 1)
+  paste0(top$NAME, " — ", top[[input$variable]], "%")
 })
 
-output$stat_max <- renderText({
-  df  <- map_data()
-  top <- df |> filter(unemp_rate == max(unemp_rate, na.rm = TRUE)) |> slice(1)
-  paste0(top$NAME, " (", top$unemp_rate, "%)")
+output$lowest <- renderText({
+  df  <- get_data() |> sf::st_drop_geometry()
+  bot <- df |> slice_min(.data[[input$variable]], n = 1)
+  paste0(bot$NAME, " — ", bot[[input$variable]], "%")
 })
 
-output$stat_min <- renderText({
-  df  <- map_data()
-  bot <- df |> filter(unemp_rate == min(unemp_rate, na.rm = TRUE)) |> slice(1)
-  paste0(bot$NAME, " (", bot$unemp_rate, "%)")
+output$med <- renderText({
+  paste0(median(get_data()[[input$variable]], na.rm = TRUE), "%")
 })
-
-output$stat_high <- renderText({
-  n <- sum(map_data()$unemp_rate > 10, na.rm = TRUE)
-  paste0(n, " area", ifelse(n == 1, "", "s"))
-})
-
-# ── Render: data table ────────────────────────────────────────────────────────
-output$data_table <- DT::renderDataTable({
-  map_data() |>
-    sf::st_drop_geometry() |>
-    select(
-      GEOID,
-      Name          = NAME,
-      `Unemp. rate (%)` = unemp_rate,
-      `MOE (±%)`    = unemp_moe,
-      Reliable      = reliable,
-      `Unemployed`  = unemployed_E,
-      `Labor force` = labor_force_E
-    ) |>
-    arrange(desc(`Unemp. rate (%)`))
-}, options = list(pageLength = 15, scrollX = TRUE))
 ```
-
----
-
-### Notes on methodology
-
-**Variable selection** — `B23025_005` and `B23025_002` come from ACS Table B23025
-(Employment Status for the Population 16+). Use `load_variables()` to explore
-alternatives:
-
-```r
-vars <- load_variables(2022, "acs5", cache = TRUE)
-View(vars)  # filter label column for "unemployed"
-```
-
-**Margin of error** — ACS estimates carry a margin of error (MOE). For small
-geographies like Census tracts, the MOE can exceed the estimate itself, making the
-rate unreliable. This app flags those cases with a ⚠ warning in the map tooltip.
-
-**Why 5-year ACS?** — The 1-year ACS only covers geographies with population ≥ 65,000,
-so Census tracts are never available. The 5-year ACS (`survey = "acs5"`) is always
-the right choice for sub-county analysis.
-
-**Color scale** — `colorQuantile()` divides areas into equal-sized buckets (quintiles),
-which prevents high-unemployment outliers from washing out color variation across
-the rest of the map.
