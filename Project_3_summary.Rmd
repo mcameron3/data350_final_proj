@@ -5,8 +5,15 @@ date: "Due date: May 4 2026 at midnight (EST)"
 output: html_document
 ---
 
+**YOUTUBE LINK**: https://www.youtube.com/watch?v=KsfXj4jCvUM
+
+**PRIOR TO RUNNING**, follow these instructions: 
+- Request an API key from [https://api.census.gov/data/key_signup.html](https://api.census.gov/data/key_signup.html)
+- Run this command: `census_api_key("YOUR_API_KEY_HERE", install = TRUE)`
+- Restart your R session! 
+
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = FALSE)
 ```
 
 ```{r}
@@ -19,6 +26,8 @@ library(spdep)
 library(tidycensus)
 library(scales)
 library(tibble)
+library(tidyr)
+library(leaflet)
 
 options(tigris_use_cache = TRUE, sf_max.plot.default = 16^6)
 ```
@@ -91,7 +100,6 @@ ui <- fluidPage(
   tabsetPanel(
     id = "main_tabs",
 
-    # tab 1 - inequality clusters
     tabPanel(
       "Inequality Clusters",
 
@@ -131,9 +139,9 @@ ui <- fluidPage(
             style = "background:#fff; border:1px solid #e0ddd4; border-radius:10px; padding:22px 28px; margin-top:10px;",
             h4("Analysis", style = "font-size:15px; font-weight:600; margin-top:0; color:#2c2c2a;"),
             p("This is map displaying levels of income inequality in Maryland. To measure income inequality, we use two metrics: Gini index and LISA cluster. Gini index is a measure of income inequality ranging from 0 (perfect equality) to 1 (maximum inequality). LISA (Local Indicators of Spacial Association) clusters are meant to detect \"hot spots\" and \"cold spots\", which are meant to identify groupings of high or low income inequality."),
-            p("When Gini index is selected, counties are colored based on their Gini index, with darker/warmer tones indicating higher inequality. However, there is also a margin of error associated with each county, which is reflected in their opacity - a lower transparency indicates a higher margin of error, and as such, should be treated with more caution when interpreting this visualization. Finally, the borders of each county, while somewhat difficult to see, indicate LISA cluster types."),
+            p("When Gini index is selected, counties are colored based on their Gini index, with lighter tones indicating higher inequality and darker tones indicating lower inequality. However, there is also a margin of error associated with each county, which is reflected in their opacity - a lower transparency indicates a higher margin of error, and as such, should be treated with more caution when interpreting this visualization. Finally, the borders of each county, while somewhat difficult to see, indicate LISA cluster types."),
             p("When LISA cluster is selected, counties are instead colored based on their LISA (Local Indicators of Spatial Association) cluster, which was computerd using Anselin's Local Moran's I statistic (with alpha = 0.05). Red (High-High) counties have high inequality and are surrounded by high-inequality neighbors, blue (Low-Low) counties have low inequality and are surrounded by low-inequality neighbors. Additionally, orange and purple counties are outliers (where their inequality level diverges sharply from their neighbors), and gray counties are not statistically significant."),
-            p("Comparing Gini index throughout time, earlier years appear to have more uncertainty, as the coloring is more transparent. This is likely a result of the data - these earlier years may not have had as strict or careful data collection, resulting in higher margins of error. Moving through time, there are a few years where Gini index changes - between 2013 and 2014, and in the past ~5 years. It appears like more rural counties are moving towards high levels of inequality (a lower Gini index), while more urban counties are moving towards low levels of inequality (a higher Gini index). This matches with the general geographic trend of urban counties between Washington DC and Baltimore have lower levels of income inequality, while more rural counties and Baltimore City have higher levels of income inequality."),
+            p("Comparing Gini index throughout time, earlier years appear to have more uncertainty, as the coloring is more transparent. This is likely a result of the data - these earlier years may not have had as strict or careful data collection, resulting in higher margins of error. Moving through time, there are a few years where Gini index changes - between 2013 and 2014, and in the past ~5 years. It appears like more rural counties are moving towards high levels of inequality (a higher Gini index), while more urban counties are moving towards low levels of inequality (a lower Gini index). This matches with the general geographic trend of urban counties between Washington DC and Baltimore have lower levels of income inequality, while more rural counties and Baltimore City have higher levels of income inequality."),
             p("Comparing LISA clusters throughout time, between 2010-2017, the only counties with statistically significant clusters are in Southern Maryland (Charles, Calvert, and St. Mary's Counties). However, between 2018-2019, Queen Anne's County was also labelled as low-low inequality, and in 2022, Prince George's County was also considered to have low-low inequality. This lack of statistical significance or change in which counties are labelled indicates that there are no strong clusters of inequality (geographic areas of high-high or low-low inequality."),
             p("In conclusion, this map helps us visualize income inequality geographically in Maryland. Namely, there are lower levels of income inequality in more urban counties between Washington DC and Baltimore, while there are higher levels of income inequality in more rural counties and Baltimore City. Additionally, these levels of income inequality have not changed much in the past 10 years.")
           )
@@ -141,51 +149,95 @@ ui <- fluidPage(
       )
     ),
 
-    # tab 2 – Michelle
     tabPanel(
-      "Michelle",
+      "Employment Patterns",
 
       br(),
       sidebarLayout(
         sidebarPanel(
           width = 3,
           div(class = "section-label", "Question"),
-          p("Michelle's research question goes here.", style = "font-size:12px; color:#6b7a90;"),
+          p("What geographic patterns exist in unemployment rates across the United States?", style = "font-size:12px; color:#6b7a90;"),
           hr(),
           div(class = "section-label", "Controls"),
-          p("Michelle's controls go here.", style = "font-size:12px; color:#6b7a90;")
+          selectInput("michelle_variable", "Select a variable to map",
+            choices = c(
+              "Unemployment Rate" = "unemp_rate",
+              "Labor Force Participation Rate" = "lfpr",
+              "Employment Rate" = "emp_rate",
+              "Not in Labor Force Rate" = "nilf_rate"
+            )
+          ),
+          sliderInput("michelle_year", "Select Year",
+            min = 2015, max = 2022, value = 2022, step = 1, sep = ""),
+          hr(),
+          actionButton("michelle_fetch", "Fetch Data", class = "btn-primary", style = "width:100%;")
         ),
 
         mainPanel(
           width = 9,
-          p("Michelle's visualizations go here.", style = "font-size:13px; color:#5f5e5a;")
+          leafletOutput("michelle_map", height = "550px"),
+          br(),
+          fluidRow(
+            column(4, wellPanel(strong("Highest"), textOutput("michelle_highest"))),
+            column(4, wellPanel(strong("Lowest"),  textOutput("michelle_lowest"))),
+            column(4, wellPanel(strong("US Median"), textOutput("michelle_med")))
+          ),
+          br(),                                          
+          div(                                           
+          style = "background:#fff; border:1px solid #e0ddd4; border-radius:10px; padding:22px 28px; margin-top:10px;",
+          h4("Analysis", style = "font-size:15px; font-weight:600; margin-top:0; color:#2c2c2a;"),
+          p("This is a map of unemployment data across the United States, including unemployment rate, employment rate, labor force participation rate, and the rate of those not in the labor force. Any year between 2015 and 2022 can also be chosen. Generally speaking, the south, rust belt, along with the west coast suffer from higher unemployment rates than the rest of the country. The majority of Alaskan counties are in the highest quantile of unemployment rate as well. The midwest and center of the nation has among the lowest unemployment rates in the country. This could be because of the mix of industries these states offer, but it also could be that they have a lower supply of workers than the more populated areas. More specifically, the south, sun belt and northwest have many of the counties with the top rates of people who are not in the labor force. This means they are not employed and not actively looking for a job, including retirees and students."),
+          p("Meanwhile, densely populated areas that have moderate unemployment rates such as the mid-atlantic up to New York often have low rates of people not in the labor force. This could be because many of those who are unemployed in these more urbanized areas are still actively looking for employment. This brings a clear cut difference between two types of areas that have moderate to high unemployment: The first is Rural areas that have high unemployment and low labor force participation rate. One such example is Clarke County, Alabama, with a 12.4% unemployment rate and a 51.8% not in labor force rate, both in the 80-100th percentiles for their respective categories. This is a symptom of economic inequality and economic marginalization. The second category of place with moderate to high unemployment is somewhere like New York County, New York, which contains Manhattan. Even though the unemployment rate is moderately high in 2022 at 6.8%, the not in labor force rate is at 33.5%, much lower than the Alabama country that also had a high unemployment rate. This suggests high unemployment in urban areas is more likely related to people in an active job search, whereas in rural areas it reflects structural or cultural barriers that lead people to fully leave the labor force."))
         )
       )
     ),
 
-    # tab 3 – Ian
     tabPanel(
-      "Ian",
+      "Education and Income",
 
       br(),
       sidebarLayout(
         sidebarPanel(
           width = 3,
           div(class = "section-label", "Question"),
-          p("Ian's research question goes here.", style = "font-size:12px; color:#6b7a90;"),
+          p("Is there a relation between educational attainment levels and poverty rates or median household income", style = "font-size:12px; color:#6b7a90;"),
           hr(),
           div(class = "section-label", "Controls"),
-          p("Ian's controls go here.", style = "font-size:12px; color:#6b7a90;")
+          radioButtons("acs_year", "ACS Year", choices = c(2022, 2021, 2020, 2019, 2018), selected = 2022),
+          selectInput("y_var", "Y-Axis",
+                  choices = c(
+                    "Poverty Rate (%)" = "poverty_rate",
+                    "Median Household Income ($)" = "median_income"
+                  )),
+          selectInput("edu_var", "X-Axis (Education)",
+                  choices = c(
+                    "% Bachelor's Degree or Higher" = "bachelors_plus",
+                    "% High School Diploma or Higher" = "hs_plus",
+                    "% Less Than High School" = "no_hs"
+                  )),
+          actionButton("fetch", "Fetch Data")
         ),
 
         mainPanel(
           width = 9,
-          p("Ian's visualizations go here.", style = "font-size:13px; color:#5f5e5a;")
-        )
-      )
-    ),
+          plotOutput("scatter", height = "500px", hover = hoverOpts("plot_hover", delay = 50)),
+      verbatimTextOutput("hover_label"),
+      hr(),
+      h4("Statistical Summary"),
+      fluidRow(
+        column(6, tableOutput("stats_table")),
+        column(6, wellPanel(textOutput("stats_text")))
+      ),
+      br(),                                          
+          div(                                           
+          style = "background:#fff; border:1px solid #e0ddd4; border-radius:10px; padding:22px 28px; margin-top:10px;",
+          h4("Analysis", style = "font-size:15px; font-weight:600; margin-top:0; color:#2c2c2a;"),
+          p("This is a scatter plot looking at the relationship between education levels by state and how those relate to both poverty rate and median household income. This helps to answer our overarching question by potentially identifying one of the factors associated with socioeconomic inequality. Looking at the graph throughout the different education levels, it is clear there is a consistent negative association between poverty rate and education level. This means that states with higher education rates tend to have lower poverty rates. This follows with the median household income as well, with higher income being linked to higher education rates. While the strength of these relationships varies, there are some definite strong coorelations we can see between median income and % bachelor's degrees. In the year 2022, we can attribute 59.2% of the variance in median income to higher education rates based on the R squared value. We also see the trend to be very significant given the low p value."),
+          p("This consistent relationship does make sense, as in the real world people with higher educations do tend to get higher paying jobs, based purely around the qualifications of said job. However, it is also common knowlege that it costs quite a bit of money to go to college, making it harder for those with low salaries to afford. This effectively traps people within their income brackets, as it costs money in order to make more money. While this does not represent the entire story, it definitely gives us a good idea as to one of the factors backing the system which causes economic inequality."))
+        ),
+    )),
 
-    # tab 4 – Summary
     tabPanel(
       "Summary",
 
@@ -193,9 +245,16 @@ ui <- fluidPage(
       sidebarLayout(
         sidebarPanel(
           width = 3,
-          div(class = "section-label", "Variables"),
-          p("Select variables to summarize.", style = "font-size:12px; color:#6b7a90;"),
+          div(class = "section-label", "Options"),
+          p("Select a summary table to display.", style = "font-size:12px; color:#6b7a90;"),
           hr(),
+          selectInput("summary_choice", "Summary Table",
+            choices = c(
+              "Gini Index (Inequality Clusters)" = "gini",
+              "Education & Income"               = "education",
+              "Unemployment Data"                = "unemployment"
+            )
+          ),
           actionButton("summary_go", "Show Summary", class = "btn-primary", style = "width:100%;")
         ),
 
@@ -207,6 +266,7 @@ ui <- fluidPage(
     )
   )
 )
+
 
 server <- function(input, output, session) {
   rv <- reactiveValues(
@@ -285,28 +345,75 @@ server <- function(input, output, session) {
   })
   
   output$summary_output <- renderUI({
-    input$summary_go
+    # Nothing shown until button is pressed
+    req(input$summary_go > 0)
     isolate({
-      if (is.null(rv$panel)) {
-        return(p("No data loaded yet. Press 'Load Data' on the Inequality Clusters tab first.", style = "font-size:13px; color:#888780;"))
-      }
-      df <- rv$panel |> dplyr::select(NAME, year, gini, gini_moe) |> sf::st_drop_geometry()
-      tagList(
-        h4("Summary Statistics: Gini Index by County-Year", style = "font-size:15px; font-weight:600;"),
-        renderTable({
-          df |>
-            dplyr::group_by(year) |>
-            dplyr::summarise(
-              N = dplyr::n(),
-              Mean = round(mean(gini, na.rm = TRUE), 4),
-              Median = round(median(gini, na.rm = TRUE), 4),
-              SD = round(sd(gini, na.rm = TRUE), 4),
-              Min = round(min(gini, na.rm = TRUE), 4),
-              Max = round(max(gini, na.rm = TRUE), 4),
-              .groups = "drop"
+      choice <- input$summary_choice
+
+      if (choice == "gini") {
+        if (is.null(rv$panel)) {
+          return(p("No Gini data loaded yet. Press 'Load Data' on the Inequality Clusters tab first.", style = "font-size:13px; color:#888780;"))
+        }
+        df <- rv$panel |> dplyr::select(NAME, year, gini, gini_moe) |> sf::st_drop_geometry()
+        tagList(
+          h4("Summary Statistics: Gini Index by County-Year", style = "font-size:15px; font-weight:600;"),
+          renderTable({
+            df |>
+              dplyr::group_by(year) |>
+              dplyr::summarise(
+                N      = dplyr::n(),
+                Mean   = round(mean(gini,   na.rm = TRUE), 4),
+                Median = round(median(gini, na.rm = TRUE), 4),
+                SD     = round(sd(gini,     na.rm = TRUE), 4),
+                Min    = round(min(gini,    na.rm = TRUE), 4),
+                Max    = round(max(gini,    na.rm = TRUE), 4),
+                .groups = "drop"
+              )
+          })
+        )
+      } else if (choice == "education"){
+        edu_df <- data()
+        if (is.null(edu_df)) {
+          return(p("No education data loaded yet. Press 'Fetch Data' on the Education and Income tab first.", style = "font-size:13px; color:#888780;"))
+        }
+        tagList(
+          h4(paste0("Summary Statistics: Education & Income by State (ACS ", input$acs_year, ")"),
+             style = "font-size:15px; font-weight:600;"),
+          renderTable({
+            dplyr::bind_rows(
+              #hardcoded summary table with values for each variable
+              edu_df |> dplyr::summarise(Variable = "% Bachelor's Degree or Higher", N = dplyr::n(), Mean = round(mean(bachelors_plus, na.rm = TRUE),                    2), Median = round(median(bachelors_plus, na.rm = TRUE), 2), SD = round(sd(bachelors_plus, na.rm = TRUE), 2),
+                 Min =round(min(bachelors_plus, na.rm = TRUE), 2), Max = round(max(bachelors_plus, na.rm = TRUE), 2)),
+              
+              edu_df |> dplyr::summarise(Variable = "% High School Diploma or Higher", N = dplyr::n(), Mean = round(mean(hs_plus, na.rm = TRUE), 2),                     Median = round(median(hs_plus, na.rm = TRUE), 2), SD = round(sd(hs_plus, na.rm = TRUE), 2), Min = round(min(hs_plus, na.rm = TRUE), 2),                  Max = round(max(hs_plus, na.rm = TRUE), 2)),
+              
+              edu_df |> dplyr::summarise(Variable = "% Less Than High School",N = dplyr::n(), Mean = round(mean(no_hs, na.rm = TRUE), 2), Median =                       round(median(no_hs, na.rm = TRUE), 2), SD = round(sd(no_hs, na.rm = TRUE), 2), Min = round(min(no_hs, na.rm = TRUE), 2), Max =                          round(max(no_hs, na.rm = TRUE), 2)),
+              
+              edu_df |> dplyr::summarise(Variable = "Poverty Rate (%)",N = dplyr::n(), Mean = round(mean(poverty_rate, na.rm = TRUE), 2), Median =                       round(median(poverty_rate, na.rm = TRUE), 2), SD = round(sd(poverty_rate, na.rm = TRUE), 2), Min = round(min(poverty_rate, na.rm =                      TRUE), 2), Max = round(max(poverty_rate, na.rm = TRUE), 2)),
+              
+              edu_df |> dplyr::summarise(Variable = "Median Household Income ($)",    N = dplyr::n(), Mean = round(mean(median_income, na.rm = TRUE),                    0), Median = round(median(median_income, na.rm = TRUE), 0), SD = round(sd(median_income, na.rm = TRUE), 0), Min =                                       round(min(median_income, na.rm = TRUE), 0), Max = round(max(median_income, na.rm = TRUE), 0))
             )
-        })
-      )
+          }, striped = TRUE, hover = TRUE, bordered = TRUE)
+        )
+      } else if (choice == "unemployment") {
+        unemp_df <- michelle_data()
+        if (is.null(unemp_df)) {
+          return(p("No unemployment data loaded yet. Press 'Fetch Data' on the Employment Patterns tab first.", style = "font-size:13px; color:#888780;"))
+        }
+        unemp_df <- sf::st_drop_geometry(unemp_df)
+        tagList(
+          h4(paste0("Summary Statistics: Unemployment Data by County (ACS ", input$michelle_year, ")"),
+             style = "font-size:15px; font-weight:600;"),
+          renderTable({
+            dplyr::bind_rows(
+              unemp_df |> dplyr::summarise(Variable = "Unemployment Rate (%)", N = dplyr::n(), Mean = round(mean(unemp_rate, na.rm = TRUE), 2), Median = round(median(unemp_rate, na.rm = TRUE), 2), SD = round(sd(unemp_rate, na.rm = TRUE), 2), Min = round(min(unemp_rate, na.rm = TRUE), 2), Max = round(max(unemp_rate, na.rm = TRUE), 2)),
+              unemp_df |> dplyr::summarise(Variable = "Labor Force Participation Rate (%)", N = dplyr::n(), Mean = round(mean(lfpr, na.rm = TRUE), 2), Median = round(median(lfpr, na.rm = TRUE), 2), SD = round(sd(lfpr, na.rm = TRUE), 2), Min = round(min(lfpr, na.rm = TRUE), 2), Max = round(max(lfpr, na.rm = TRUE), 2)),
+              unemp_df |> dplyr::summarise(Variable = "Employment Rate (%)", N = dplyr::n(), Mean = round(mean(emp_rate, na.rm = TRUE), 2), Median = round(median(emp_rate, na.rm = TRUE), 2), SD = round(sd(emp_rate, na.rm = TRUE), 2), Min = round(min(emp_rate, na.rm = TRUE), 2), Max = round(max(emp_rate, na.rm = TRUE), 2)),
+              unemp_df |> dplyr::summarise(Variable = "Not in Labor Force Rate (%)", N = dplyr::n(), Mean = round(mean(nilf_rate, na.rm = TRUE), 2), Median = round(median(nilf_rate, na.rm = TRUE), 2), SD = round(sd(nilf_rate, na.rm = TRUE), 2), Min = round(min(nilf_rate, na.rm = TRUE), 2), Max = round(max(nilf_rate, na.rm = TRUE), 2))
+            )
+          }, striped = TRUE, hover = TRUE, bordered = TRUE)
+        )
+      }
     })
   })
 
@@ -360,6 +467,249 @@ server <- function(input, output, session) {
         legend.position = "right"
       )
   })
+  
+  # michelle 
+  michelle_data <- eventReactive(input$michelle_fetch, {
+
+    raw <- get_acs(
+      geography = "county",
+      variables = c(
+        unemployed = "B23025_005",
+        labor_force = "B23025_002",
+        employed = "B23025_004",
+        nilf = "B23025_007",
+        pop16 = "B23025_001"
+      ),
+      year = input$michelle_year,
+      survey = "acs5",
+      geometry = TRUE
+    )
+
+    wide <- raw |>
+      sf::st_drop_geometry() |>
+      tidyr::pivot_wider(
+        id_cols = c(GEOID, NAME),
+        names_from = variable,
+        values_from = estimate
+      )
+
+    geom <- raw |> select(GEOID) |> group_by(GEOID) |> slice(1) |> ungroup()
+
+    left_join(geom, wide, by = "GEOID") |>
+      mutate(
+        unemp_rate = round(unemployed / labor_force * 100, 1),
+        lfpr = round(labor_force / pop16 * 100, 1),
+        emp_rate = round(employed / labor_force * 100, 1),
+        nilf_rate = round(nilf / pop16 * 100, 1)
+      ) |>
+      filter(!is.na(unemp_rate), labor_force > 0)
+  })
+
+  michelle_var_label <- reactive({
+    switch(input$michelle_variable,
+      unemp_rate = "Unemployment Rate (By Quantile)",
+      lfpr = "Labor Force Participation Rate (By Quantile)",
+      emp_rate = "Employment Rate (By Quantile)",
+      nilf_rate = "Not in Labor Force Rate (By Quantile)"
+    )
+  })
+
+  output$michelle_map <- renderLeaflet({
+
+    df <- michelle_data()
+    col <- df[[input$michelle_variable]]
+    pal <- colorQuantile("YlOrRd", col, n = 5)
+
+    leaflet(df) |>
+      addProviderTiles("CartoDB.Positron") |>
+      setView(lng = -98.5, lat = 38.5, zoom = 4) |>
+      addPolygons(
+        fillColor = ~pal(df[[input$michelle_variable]]),
+        fillOpacity = 0.7,
+        color = "white",
+        weight = 0.4,
+        highlight = highlightOptions(weight = 2, fillOpacity = 0.9),
+        label = ~paste0(NAME, ": ", df[[input$michelle_variable]], "%"),
+        labelOptions = labelOptions(textsize = "13px")
+      ) |>
+      addLegend(
+        position = "bottomright",
+        pal = pal,
+        values = col,
+        title = michelle_var_label()
+      )
+  })
+
+  output$michelle_highest <- renderText({
+    df <- michelle_data() |> sf::st_drop_geometry()
+    top <- df |> slice_max(.data[[input$michelle_variable]], n = 1)
+    paste0(top$NAME, " — ", top[[input$michelle_variable]], "%")
+  })
+
+  output$michelle_lowest <- renderText({
+    df <- michelle_data() |> sf::st_drop_geometry()
+    bot <- df |> slice_min(.data[[input$michelle_variable]], n = 1)
+    paste0(bot$NAME, " — ", bot[[input$michelle_variable]], "%")
+  })
+
+  output$michelle_med <- renderText({
+    paste0(median(michelle_data()[[input$michelle_variable]], na.rm = TRUE), "%")
+  })
+  
+  # ian 
+  data <- eventReactive(input$fetch, {
+    raw <- get_acs(
+      geography = "state",
+      variables = c(
+        total_25plus = "B15003_001",
+        hs_grad = "B15003_017",
+        ged = "B15003_018",
+        sc_lt1 = "B15003_019",
+        sc_1pl = "B15003_020",
+        assoc = "B15003_021",
+        bachelors = "B15003_022",
+        masters = "B15003_023",
+        prof = "B15003_024",
+        doctorate = "B15003_025",
+        tot_poverty = "B17001_001",
+        in_poverty = "B17001_002",
+        med_income = "B19013_001"
+      ),
+      year = as.integer(input$acs_year),
+      survey = "acs5",
+      output = "wide"
+    )
+ 
+    raw |>
+      transmute(
+        state = NAME,
+        bachelors_plus = (bachelorsE + mastersE + profE + doctorateE) / total_25plusE * 100,
+        hs_plus = (hs_gradE + gedE + sc_lt1E + sc_1plE + assocE + bachelorsE + mastersE + profE + doctorateE) / total_25plusE * 100,
+        no_hs = 100 - hs_plus,
+        poverty_rate = in_povertyE / tot_povertyE * 100,
+        median_income = med_incomeE
+      ) |>
+      filter(!is.na(poverty_rate), !is.na(median_income))
+  })
+ 
+  x_labels <- c(
+    bachelors_plus = "% Bachelor's Degree or Higher",
+    hs_plus = "% High School Diploma or Higher",
+    no_hs = "% Less Than High School"
+  )
+  y_labels <- c(
+    poverty_rate = "Poverty Rate (%)",
+    median_income = "Median Household Income ($)"
+  )
+ 
+  output$scatter <- renderPlot({
+    df <- data()
+    req(df)
+ 
+    ggplot(df, aes(x = .data[[input$edu_var]], y = .data[[input$y_var]])) +
+      geom_smooth(method = "lm", se = TRUE, color = "#0d3b8c", fill = "#a8c4f0", alpha = 0.25, linewidth = 1.4) +
+      geom_point(size = 3, alpha = 0.8, color = "#1a6fb5") +
+      labs(
+        x = x_labels[[input$edu_var]],
+        y = y_labels[[input$y_var]],
+        title = paste(y_labels[[input$y_var]], "vs.", x_labels[[input$edu_var]]),
+        caption = paste("Source: ACS 5-Year", input$acs_year)
+      ) +
+      theme_bw(base_size = 13) +
+      theme(
+        plot.title = element_text(face = "bold", size = 14),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(color = "#cccccc"),
+        axis.title = element_text(color = "#444444"),
+        plot.caption = element_text(color = "#888888", size = 9)
+      )
+  })
+ 
+  output$hover_label <- renderText({
+    df <- data()
+    req(df, input$plot_hover)
+ 
+    hover <- input$plot_hover
+    dists <- sqrt((df[[input$edu_var]] - hover$x)^2 +
+                  (df[[input$y_var]] - hover$y / hover$domain$top * max(df[[input$y_var]]))^2)
+ 
+    nearest <- df[which.min(dists), ]
+    threshold <- (max(df[[input$edu_var]]) - min(df[[input$edu_var]])) * 0.05
+ 
+    if (min(dists) < threshold) {
+      y_val <- if (input$y_var == "median_income") {
+        paste0("$", scales::comma(round(nearest[[input$y_var]])))
+      } else {
+        paste0(round(nearest[[input$y_var]], 1), "%")
+      }
+      paste0(nearest$state, "  |  ",
+             x_labels[[input$edu_var]], ": ", round(nearest[[input$edu_var]], 1), "%  |  ",
+             y_labels[[input$y_var]], ": ", y_val)
+    } else {
+      ""
+    }
+  })
+ 
+  stats <- reactive({
+    df <- data(); req(df)
+    fit <- lm(df[[input$y_var]] ~ df[[input$edu_var]])
+    list(fit = fit, df = df)
+  })
+ 
+  output$stats_table <- renderTable({
+    s <- stats(); req(s)
+    fit <- s$fit
+    df <- s$df
+    sm <- summary(fit)
+    r <- cor(df[[input$edu_var]], df[[input$y_var]], use = "complete.obs")
+    coefs <- coef(sm)
+ 
+    data.frame(
+      Statistic = c(
+        "Pearson Correlation (r)",
+        "R-squared",
+        "Adjusted R-squared",
+        "Intercept",
+        "Slope (education → outcome)",
+        "Slope Std. Error",
+        "Slope p-value",
+        "F-statistic",
+        "Observations"
+      ),
+      Value = c(
+        round(r, 4),
+        round(sm$r.squared, 4),
+        round(sm$adj.r.squared, 4),
+        round(coefs[1, 1], 4),
+        round(coefs[2, 1], 4),
+        round(coefs[2, 2], 4),
+        formatC(coefs[2, 4], format = "e", digits = 3),
+        round(sm$fstatistic[1], 3),
+        nrow(df)
+      )
+    )
+  }, striped = TRUE, hover = TRUE, bordered = TRUE)
+ 
+  output$stats_text <- renderText({
+    s <- stats(); req(s)
+    fit <- s$fit; df <- s$df
+    sm <- summary(fit)
+    r <- cor(df[[input$edu_var]], df[[input$y_var]], use = "complete.obs")
+    p <- coef(sm)[2, 4]
+    slope <- coef(sm)[2, 1]
+ 
+    direction <- if (slope > 0) "positively" else "negatively"
+    strength <- if (abs(r) > 0.7) "strongly" else if (abs(r) > 0.4) "moderately" else "weakly"
+    sig <- if (p < 0.001) "highly significant (p < 0.001)" else if (p < 0.05) paste0("significant (p = ", round(p, 3), ")") else paste0("not significant (p = ", round(p, 3), ")")
+ 
+    paste0(
+      "Interpretation: ", x_labels[[input$edu_var]], " is ", strength, " ", direction,
+      " associated with ", y_labels[[input$y_var]], " across U.S. states. ",
+      "The relationship is ", sig, ". ",
+      "The model explains ", round(sm$r.squared * 100, 1), "% of the variance in ", y_labels[[input$y_var]], " (R² = ", round(sm$r.squared, 3), ")."
+    )
+  })
+  
 }
 
 shinyApp(ui, server)
@@ -371,71 +721,73 @@ In this portion of the project, you will improve upon your previous EDA report t
 
 ## Preparation
 
-1. Study the feedback that your peers gave you to see if they make sense. If so, figure out how to incorporate it into the project. Note that each group member may have received comments from different peers, so gather them.  
+1.  Study the feedback that your peers gave you to see if they make sense. If so, figure out how to incorporate it into the project. Note that each group member may have received comments from different peers, so gather them.
 
-2. A number of the EDA projects, though having good individual questions, lack an overall theme, i.e., how do you describe the goal of of your project in 1 or 2 sentences? If this is the case, I'd like to you to dig a bit deeper to **come up with a unifying theme**. Note that this may mean you have completely redo a plot or two. Incorporate this theme into 
+2.  A number of the EDA projects, though having good individual questions, lack an overall theme, i.e., how do you describe the goal of of your project in 1 or 2 sentences? If this is the case, I'd like to you to dig a bit deeper to **come up with a unifying theme**. Note that this may mean you have completely redo a plot or two. Incorporate this theme into
 
-  - the title of your Shiny app, and
-  - the title of your slides.
+-   the title of your Shiny app, and
+-   the title of your slides.
 
 ## Instruction for your Shiny app
 
-1. The app must have an well-organized interface with **multiple visualization tabs and one summary tab**.
-2. Each group member is responsible for at least one tab, *not including* the summary tab.
-3. For the visualization tab:
+1.  The app must have an well-organized interface with **multiple visualization tabs and one summary tab**.
 
-    - Each tab must be interactive
-    - Each tab must correspond to a different plot type (okay if say tab 1 is `geom_point() + geom_smooth()` and tab 2 is `geom_boxplot + geom_smooth()`)
-    - Each plot must include at least 4 variables
-    - Each tab needs to have check boxes or radio button
-    
-4. For the data summary tab:
+2.  Each group member is responsible for at least one tab, *not including* the summary tab.
 
-    - The tab must allow the user to choose some of the variables of interest and output the summary statistics, and bonus for outputting the distribution on top of that
-    - you must include an **action button**: the user will only see the updated output **after** clicking the button.
+3.  For the visualization tab:
+
+    -   Each tab must be interactive
+    -   Each tab must correspond to a different plot type (okay if say tab 1 is `geom_point() + geom_smooth()` and tab 2 is `geom_boxplot + geom_smooth()`)
+    -   Each plot must include at least 4 variables
+    -   Each tab needs to have check boxes or radio button
+
+4.  For the data summary tab:
+
+    -   The tab must allow the user to choose some of the variables of interest and output the summary statistics, and bonus for outputting the distribution on top of that
+    -   you must include an **action button**: the user will only see the updated output **after** clicking the button.
 
 ## Instruction for your slides and presentation
 
-1. The slides are clean and well organized, suitable for a typical scientific report
-2. There must be an intro + background on the dataset, the theme of the project, and where you're coming from (i.e. motivation to study these questions)
-3. This is a data visualization course, so in the main body of the slides, pictures speak louder than words!! Use concise bullet points only (or none at all). **Do not include paragraphs of writings**. When you present, speak over plots not the words. 
-4. Each member should present their own plots. Otherwise, it's up to you who presents the intro, background, and conclusion. 
-5. Bonus for a short demo of the Shiny app. 
-6. The recorded presentation should be 10-15 minutes long. Feel free to make edits if you see necessary. Upload the final video to YouTube. Set it to private and include the shared link in your submission (see 1st bullet point in submission). 
+1.  The slides are clean and well organized, suitable for a typical scientific report
+2.  There must be an intro + background on the dataset, the theme of the project, and where you're coming from (i.e. motivation to study these questions)
+3.  This is a data visualization course, so in the main body of the slides, pictures speak louder than words!! Use concise bullet points only (or none at all). **Do not include paragraphs of writings**. When you present, speak over plots not the words.
+4.  Each member should present their own plots. Otherwise, it's up to you who presents the intro, background, and conclusion.
+5.  Bonus for a short demo of the Shiny app.
+6.  The recorded presentation should be 10-15 minutes long. Feel free to make edits if you see necessary. Upload the final video to YouTube. Set it to private and include the shared link in your submission (see 1st bullet point in submission).
 
 ## Submission
 
-A `zip` file consisting of 
+A `zip` file consisting of
 
-  - one `RMD` file and one `HTML` file, same as in the previous project, but **MAKE SURE TO INCLUDE YOUR YOUTUBE LINK AT THE VERY BEGINNING**
-  - one `R` file for your Shiny app
-  - one set of slides in **PDF** format (work in Google Slides then save to PDF)
-  - one pdf file with the post-production report
+-   one `RMD` file and one `HTML` file, same as in the previous project, but **MAKE SURE TO INCLUDE YOUR YOUTUBE LINK AT THE VERY BEGINNING**
+-   one `R` file for your Shiny app
+-   one set of slides in **PDF** format (work in Google Slides then save to PDF)
+-   one pdf file with the post-production report
 
 ## Grading structure
 
-The precise rubric will be published via ELMS. In addition to the criteria from the previous projects, you will be graded on the functionality of your Shiny app and the quality of your presentation. 
+The precise rubric will be published via ELMS. In addition to the criteria from the previous projects, you will be graded on the functionality of your Shiny app and the quality of your presentation.
 
-## Group Structure 
+## Group Structure
 
 > **Optional but recommended:** switching your role from the previous project for a more well-rounded experience.
 
-> **Caution:** Please let me know of communication issues as soon as possible. You are not expected to pick up substantial slacks from your group members. 
+> **Caution:** Please let me know of communication issues as soon as possible. You are not expected to pick up substantial slacks from your group members.
 
 | Role | Responsibilities |
-|------|----------------|
-| **Project Leader/Manager** | - Guides the overall direction of the EDA project <br> - Organizes workflow, deadlines, communication (with team members and the instructor), and file submission  |
-|||
-| **Data/Stat Lead** | - Performs data cleaning, transformations, and statistical analysis <br>- Provides technical support to others |
-|||
-| **Visualization/Communication Lead** | - Designs clear, well-labeled, and statistically informed figures <br>- Standardizes figures/texts and integrate them into report<br>|
-|||
-| **All Members** | - Each member is responsible for $\geq 1$ Shiny tabs and their own portion of the presentation and slides <br> - Each member is responsible for writing a group member review, to be submitted separately |
+|--------------------|----------------------------------------------------|
+| **Project Leader/Manager** | \- Guides the overall direction of the EDA project <br> - Organizes workflow, deadlines, communication (with team members and the instructor), and file submission |
+|  |  |
+| **Data/Stat Lead** | \- Performs data cleaning, transformations, and statistical analysis <br>- Provides technical support to others |
+|  |  |
+| **Visualization/Communication Lead** | \- Designs clear, well-labeled, and statistically informed figures <br>- Standardizes figures/texts and integrate them into report<br> |
+|  |  |
+| **All Members** | \- Each member is responsible for $\geq 1$ Shiny tabs and their own portion of the presentation and slides <br> - Each member is responsible for writing a group member review, to be submitted separately |
 
 ## Post-production
 
 Each member is required to submit a report including an individual reflection and a group member evaluation. Both will be available only to the instructor/grader. Each report must include the following key information:
 
-- Your roles and your plots (1 paragraph)
-- Summary of your work (1 paragraph)
-- Evaluation of each of your team member's work, i.e., what aspects are done well and what could be improved for each member. (1 paragraph for each member)
+-   Your roles and your plots (1 paragraph)
+-   Summary of your work (1 paragraph)
+-   Evaluation of each of your team member's work, i.e., what aspects are done well and what could be improved for each member. (1 paragraph for each member)

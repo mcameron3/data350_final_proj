@@ -5,11 +5,16 @@ date: "Due date: May 4 2026 at midnight (EST)"
 output: html_document
 ---
 
+**YOUTUBE LINK**: https://www.youtube.com/watch?v=KsfXj4jCvUM
+
+**PRIOR TO RUNNING**, follow these instructions: 
+- Request an API key from [https://api.census.gov/data/key_signup.html](https://api.census.gov/data/key_signup.html)
+- Run this command: `census_api_key("YOUR_API_KEY_HERE", install = TRUE)`
+- Restart your R session! 
+
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = FALSE)
 ```
-
-**YOUTUBE LINK**: https://www.youtube.com/watch?v=KsfXj4jCvUM
 
 ```{r}
 library(shiny)
